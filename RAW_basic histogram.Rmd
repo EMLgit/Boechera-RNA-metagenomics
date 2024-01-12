@@ -1,0 +1,337 @@
+---
+title: "Data exploration of RNA viruses in pooled Boechera popns (data from Arvind)"
+author: "emlombardi"
+date: "11/3/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(readxl)
+library(dplyr)
+library(lme4) # to fit mixed models
+library(lmerTest) # to get p-values
+library(emmeans)  # for post-hoc tests
+library(factoextra)
+library(tidyverse)
+library(dplyr)
+library(sp)
+library(randomForest)
+library(caTools)
+library(e1071)
+library(GGally)
+library(readxl)
+library(colorspace)
+library(grid)
+library(viridis)
+library(wesanderson)
+library(ggsci)
+library(taxa)
+
+
+data<- read_excel("~/Desktop/Research/Boechera/Genomics/Pooled RNA analysis from Arvind (Nov2021)/Boechera_Varsani_Blastx.xlsx", 
+    sheet = "RNA viruses only")
+
+
+```
+
+## First just play around to see 
+
+Bascially, the data that I'm exploring are metagenomes of all RNA viruses detected via Blast, but I'm looking at the protein matches rather than nucleotide matches (blasx rather than blastn). Arvind Varsani sent the datasheet that I'm working with to create this first analysis. The goal is to produce a clean and accessible first pass figure to use in the NSF postdoc application. 
+
+```{r}
+summary(data)x
+```
+
+## Basic Plots
+
+The first plot just shows the accession on the x axis (i.e. the individual virus identity for each protein match), and the E_value on the y axis. Colored by population. 
+
+```{r}
+ggplot(data, aes(Accession, E_value, color=population))+
+  geom_jitter(alpha=0.4)+
+  scale_color_viridis(discrete=TRUE, option="plasma")+
+  labs(title="Probability of sequence occuring in database by chance (i.e. false positive)", 
+       y="E-value", x="Individual Host")
+
+#This figure shows that most of the hits are very likely 'real' (i.e. the probability of occuring by chance is approaching zero)
+ggplot(data, aes(E_value))+ 
+  geom_area(stat="bin")
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+qplot(x=elevation, y=Accession, color=E_value, data=data, geom="point") #switch so that y-axis is virus family?
+
+ggplot(data, aes(population, Accession))+
+  geom_bar(stat="identity")+
+  labs(title="Number of virus accessions identified across host populations", 
+       y="Accession (# virus hits)", x="Host population")
+
+ggplot(data, aes(population, query))+
+  geom_bar(stat="identity")+
+  labs(title="Number of viral protein contigs returned across host populations", 
+       y="Accession (# virus hits)", x="Host population")
+
+ggplot(data, aes(x =population, y = sample_name, color = elevation)) +
+  geom_jitter()+
+   scale_color_viridis(discrete=FALSE, option="plasma")
+ # scale_x_discrete(limits = c("Keene Valley", "Nelson", "Placid", "Willsboro", "Mineah", "Mulholland", "Mundy", "Varna"))
+
+
+```
+The datasheet needs to be cleaned up. First, I'm going to try to parse virus family identify out of the column "Taxonomy"
+```{r}
+###START cleaning the data
+
+#parse the taxonomic data into independent columns (single column "taxonomy" becomes nine columns with higher level classification or NAs present)
+data<-data %>% separate(Taxonomy, c("tax1", "tax2", "tax3", "tax4", "tax5", "tax6", "tax7", "tax8", "tax9"), ";", remove=FALSE, )
+
+#Remove rows with E_values that are too high (I'm arbitrarily setting this as anything greater than 0.0000001)
+data<-filter(data, E_value<0.0000001)
+
+#Remove rows with query_coverage less than 80%. I think this is pretty conservative, but I'm not sure. I should ask Arvind. 
+data<-filter(data, query_coverage>.8)
+
+
+#Export the cleaned data (full) to a temporary workbook. I'm using Excel/pivot tables to get an abudnance matrix. Eventually need to figure out how to do this in R. 
+library("writexl")
+write_xlsx(data,"~/Desktop/Research/Boechera/Genomics/Pooled RNA analysis from Arvind (Nov2021)/cleaned_blastx_Jan2022.xlsx")
+```
+
+#Great. Now I'm going to start working through the figures again to see the cleaned up data a bit. 
+
+```{r}
+table(data$tax7) #just to take a quick look
+
+
+#virus abundance by taxonomic group 7
+ggplot(data, aes(tax7))+
+  geom_bar()
+
+
+ggplot(data, aes(x = population, y = E_value, color = population)) +
+  geom_jitter(alpha = 0.4)+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+
+
+```
+```{r}
+#Until this point, I've been working with tabular data and categorical variables from the original dataset. 
+#What I also want to do is create tables that tell me how frequently each virus is present in each site
+
+
+attach(data)
+freq_vir<-table(population, tax7) #frequency of viruses in tax7 by population. Basically presence/absence. 
+
+qplot(freq_vir)
+
+#Next up is to calculate shannon diversity at each elevation/population level...using vegan, I think. 
+
+```
+
+#The following chunk is an attempt to create an abundance matrix in R. It sorta works but isn't quite right. Around line 100 (earlier) I exported the cleaned original data sheet to excel so that I can use pivot table to create abundance matrices. These are saved as "cleaned_blastx_Jan2022" and work well enough for now. Figure out how to do all of this in R, though.
+```{r}
+#cleaning data with Jansen. Yay! Better datasheet to work with. 
+counts.data<-data%>%group_by(population, Organism)%>%summarise(counts=n())
+counts.popn<-counts.data%>%pivot_wider(names_from=Organism, values_from=counts, values_fill=0)
+
+#weirdly the total number of viruses per population isn't showing up in the actual dataframe, but you can still refer to it and calculate relative abundance vales for each virus group accordingly
+popn.abundance<-cbind(counts.popn, total = rowSums(counts.popn[,2:126])) #this line sums the number of virus matches per population (row)
+
+```
+
+#Okay. This next part should also be unnecessary if I figure out how to make abundance matrices in R rather than Excel. But for now, I need to upload the datasheet as an abundance matrix, which I've organized by tax7 for now. There are five rows (five populations) and a bunch of columns for each taxonomic group. The values in the matrix are abundance of each tax7 group compared to the population. https://jkzorz.github.io/2019/06/05/stacked-bar-plots.html
+
+```{r}
+library(ggplot2)
+library(reshape2)
+
+abundmatrix_tax7<-read_excel("~/Desktop/Research/Boechera/Genomics/Pooled RNA analysis from Arvind (Nov2021)/cleaned_blastx_Jan2022.xlsx", 
+    sheet = "abundmat_tax7popn")
+
+abundmatrix_tax7$Population <- factor(abundmatrix_tax7$Population,levels = c('ES', 'CB', 'RMBL', 'WG', 'VB')) #This reorders the X axis in order of elevation
+
+
+#convert data frame from a "wide" format to a "long" format and group by population
+tax7<-abundmatrix_tax7%>%
+  melt(id=c("Population"))%>%
+  arrange(Population)
+
+#Note that there are a bunch of rare viruses with very low abundance in the matrix. I only want the ten most abundant taxonomic groups displayed in the stacked barchart. 
+
+tax7common<-tax7%>%
+  filter(value>0.005) #There are 48 samples included when you look at only those viruses that represent more than 1% of the abundance in each population
+
+#The code below is necessary to keep variables in order by population
+tax7common$Population <- factor(tax7common$Population,levels=unique(tax7common$Population))
+
+#make the plot! Note that this first plot isn't going to actually work because there are too many taxonomic groups represented
+
+mx = ggplot(tax7common, aes(x = Population, fill = variable, y = value)) + 
+    geom_bar(stat = "identity", colour = "black") + 
+    theme(axis.text.x = element_text(angle = 90, size = 14, colour = "black", vjust = 0.5, hjust = 1, face= "bold"), 
+    axis.title.y = element_text(size = 16, face = "bold"), legend.title = element_text(size = 16, face = "bold"), 
+    legend.text = element_text(size = 12, face = "bold", colour = "black"), 
+    axis.text.y = element_text(colour = "black", size = 12, face = "bold")) + 
+    scale_y_continuous(expand = c(0,0)) + 
+    labs(x = "", y = "Relative Abundance (%)", fill = "Virus family") + 
+    scale_color_viridis()
+    
+mx
+
+```
+##The stacked barplots are useful and pretty, but not especially clear. There are too many individual organisms and thus too many colors. A clearer way of doing this is to use bubble plots. https://jkzorz.github.io/2019/06/05/Bubble-plots.html
+```{r}
+bubble1 = ggplot(tax7common, aes(x = Population, y = variable)) + 
+  geom_point(aes(size = value, fill = variable), alpha = 0.75, shape = 21) + 
+  scale_size_continuous(limits = c(0.0001, 10), range = c(1,20), breaks = c(10,50,100)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "")  + 
+  theme(legend.key=element_blank(), 
+  axis.text.x = element_text(colour = "black", size = 12, face = "bold", angle = 90, vjust = 0.3, hjust = 1), 
+  axis.text.y = element_text(colour = "black", face = "bold", size = 10), 
+  legend.text = element_text(size = 10, face ="bold", colour ="black"), 
+  legend.title = element_text(size = 12, face = "bold"), 
+  panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1.2), 
+  legend.position = "right") +  
+  scale_color_viridis()
+  #scale_fill_manual(values = colours, guide = FALSE) + 
+  #scale_y_discrete(limits = rev(levels(tax7common$variable))) 
+
+bubble1
+
+ggsave("Bubble_tax7popn.svg")
+
+```
+
+#Great. Now I'm hoping I can make a relative abundance stacked barchart like in this tutorial (https://microbiome.github.io/tutorials/Composition.html), and need to load some packages, play around with the data a bit. 
+
+```{r}
+#Stacked barchart of only the ten most abundant taxonomic groups in tax7 across five elevational levels
+#This is not working because subsetting by named variable group is throwing weird errors
+keep <- c("Metaviridae", "Potyviridae", "Caulimoviridae", "Botourmiaviridae", "Mitoviridae", "Cornidovirineae", "Narnaviridae", "Totiviridae", "Hypoviridae", "Partitiviridae")
+tax7_topten<-filter(tax7, variable %in% keep)
+
+#The code below is necessary to keep variables in order by population
+tax7_topten$Population <- factor(tax7_topten$Population,levels=unique(tax7_topten$Population))
+
+#make the plot! This plot is only looking at the virus groups listed above, so it's a little easier to interpret. The bar height is not equivalent, though. This is because there are some populations with more low-frequency 'other' viruses. 
+
+mx2 = ggplot(tax7_topten, aes(x = Population, fill = variable, y = value)) + 
+    geom_bar(stat = "identity", colour = "black") + 
+    theme(axis.text.x = element_text(angle = 90, size = 14, colour = "black", vjust = 0.5, hjust = 1, face= "bold"), 
+    axis.title.y = element_text(size = 16, face = "bold"), legend.title = element_text(size = 16, face = "bold"), 
+    legend.text = element_text(size = 12, face = "bold", colour = "black"), 
+    axis.text.y = element_text(colour = "black", size = 12, face = "bold")) + 
+    scale_y_continuous(expand = c(0,0)) + 
+    labs(x = "", y = "Relative Abundance (%)", fill = "OTU") + 
+    scale_color_viridis()
+    
+mx2
+
+#Replicate the bubble plot with the top few viruses
+bubble2 = ggplot(tax7_topten, aes(x = Population, y = variable)) + 
+  geom_point(aes(size = value, fill = variable), alpha = 0.75, shape = 21) + 
+  scale_size_continuous(limits = c(0.0001, 10), range = c(1,20), breaks = c(10,50,100)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "")  + 
+  theme(legend.key=element_blank(), 
+  axis.text.x = element_text(colour = "black", size = 12, face = "bold", angle = 90, vjust = 0.3, hjust = 1), 
+  axis.text.y = element_text(colour = "black", face = "bold", size = 10), 
+  legend.text = element_text(size = 10, face ="bold", colour ="black"), 
+  legend.title = element_text(size = 12, face = "bold"), 
+  panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1.2), 
+  legend.position = "right") +  
+  scale_color_viridis()
+  #scale_fill_manual(values = colours, guide = FALSE) + 
+  #scale_y_discrete(limits = rev(levels(tax7common$variable))) 
+
+bubble2 #don't use this. It doesn't include everything...
+
+
+```
+
+##Great. So now I've got a couple of stacked barcharts looking at taxonomic level 7 (family) diversity across each site. I would also like to look to see if there is a noticable difference in sample diversity within a site, so I'll do the same thing with an abudnance matrix ordered by pooled sample rather than site. The following chunk is basically the same thing as chunk 9, but for samples instead of populations. 
+
+```{r}
+tax7samples<-read_excel("~/Desktop/Research/Boechera/Genomics/Pooled RNA analysis from Arvind (Nov2021)/cleaned_blastx_Jan2022.xlsx", 
+    sheet = "abundmat_tax7samples")
+
+
+
+#convert data frame from a "wide" format to a "long" format and group by population
+tax7<-tax7samples%>%
+  melt(id=c("Sample"))%>%
+  arrange(Sample)
+
+tax7samps_common<-tax7%>%
+  filter(value>0.001) #There are 106 samples included when you look at only those viruses that represent more than 1% of the abundance in each population
+
+#The code below is necessary to keep variables in order by population
+tax7samps_common$Sample <- factor(tax7samps_common$Sample,levels=unique(tax7samps_common$Sample))
+
+#make the plot! Note that this first plot isn't going to actually work because there are too many taxonomic groups represented
+
+mx3 = ggplot(tax7samps_common, aes(x = Sample, fill = variable, y = value)) + 
+    geom_bar(stat = "identity", colour = "black") + 
+    theme(axis.text.x = element_text(angle = 90, size = 14, colour = "black", vjust = 0.5, hjust = 1, face= "bold"), 
+    axis.title.y = element_text(size = 16, face = "bold"), legend.title = element_text(size = 16, face = "bold"), 
+    legend.text = element_text(size = 12, face = "bold", colour = "black"), 
+    axis.text.y = element_text(colour = "black", size = 12, face = "bold")) + 
+    scale_y_continuous(expand = c(0,0)) + 
+    labs(x = "", y = "Relative Abundance (%)", fill = "Virus family") + 
+    scale_color_viridis()
+    
+mx3
+
+
+#repeat the bubble plot that goes with the stacked barchart mx3
+bubble3 = ggplot(tax7samps_common, aes(x = Sample, y = variable)) + 
+  geom_point(aes(size = value, fill = variable), alpha = 0.75, shape = 21) + 
+  scale_size_continuous(limits = c(0.0001, 10), range = c(1,20)) + 
+  labs( x= "", y = "", size = "Relative Abundance (%)", fill = "")  + 
+  theme(legend.key=element_blank(), 
+  axis.text.x = element_text(colour = "black", size = 12, face = "bold", angle = 90, vjust = 0.3, hjust = 1), 
+  axis.text.y = element_text(colour = "black", face = "bold", size = 10), 
+  legend.text = element_text(size = 10, face ="bold", colour ="black"), 
+  legend.title = element_text(size = 12, face = "bold"), 
+  panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1.2), 
+  legend.position = "right") +  
+  scale_color_viridis()
+  #scale_fill_manual(values = colours, guide = FALSE) + 
+  #scale_y_discrete(limits = rev(levels(tax7common$variable))) 
+
+bubble3
+
+```
+Now repeat the same as chunk ten above looking only at the ten most common virus families across all pooled samples. 
+
+```{r}
+#Stacked barchart of only the ten most abundant taxonomic groups in tax7 across fifteen samples 
+keep <- c("Metaviridae", "Potyviridae", "Caulimoviridae", "Botourmiaviridae", "Mitoviridae", "Cornidovirineae", "Narnaviridae", "Totiviridae", "Hypoviridae", "Partitiviridae", "Retroviridae", "Luteoviridae")
+tax7_top_samps<-filter(tax7, variable %in% keep)
+
+#The code below is necessary to keep variables in order by population
+tax7_top_samps$Sample <- factor(tax7_top_samps$Sample,levels=unique(tax7_top_samps$Sample))
+
+#make the plot! This plot is only looking at the virus groups listed above, so it's a little easier to interpret. The bar height is not equivalent, though. This is because there are some populations with more low-frequency 'other' viruses. 
+
+mx4 = ggplot(tax7_top_samps, aes(x = Sample, fill = variable, y = value)) + 
+    geom_bar(stat = "identity", colour = "black") + 
+    theme(axis.text.x = element_text(angle = 90, size = 14, colour = "black", vjust = 0.5, hjust = 1, face= "bold"), 
+    axis.title.y = element_text(size = 16, face = "bold"), legend.title = element_text(size = 16, face = "bold"), 
+    legend.text = element_text(size = 12, face = "bold", colour = "black"), 
+    axis.text.y = element_text(colour = "black", size = 12, face = "bold")) + 
+    scale_y_continuous(expand = c(0,0)) + 
+    labs(x = "", y = "Relative Abundance (%)", fill = "Virus family") + 
+    scale_color_viridis()
+    
+mx4 #This is a useful plot, I think. There are twelve virus families present, and you can see that the high elevation plants are fully described (i.e. no rare viruses) while the lower elevation plants have missing height, indicating lots of viruses that are less common but make up a percentage of the diversity 
+
+```
+
